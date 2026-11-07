@@ -1,0 +1,168 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Message validation
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderUid', 'senderEmail', 'senderName', 'text', 'createdAt', 'expireAt', 'readBy', 'participants']) &&
+        data.keys().hasOnly(['senderUid', 'senderEmail', 'senderName', 'text', 'createdAt', 'expireAt', 'readBy', 'participants', 'reaction', 'delivered']) &&
+        data.senderUid is string && data.senderUid == request.auth.uid &&
+        data.senderEmail is string && data.senderEmail.size() <= 256 &&
+        data.senderName is string && data.senderName.size() <= 64 &&
+        data.text is string && data.text.size() > 0 && data.text.size() <= 2000 &&
+        data.createdAt is timestamp &&
+        data.expireAt is timestamp &&
+        data.readBy is list && data.readBy.size() <= 2 &&
+        data.participants is list && data.participants.size() <= 2 &&
+        (!('reaction' in data) || (data.reaction is string && data.reaction.size() <= 16)) &&
+        (!('delivered' in data) || (data.delivered is bool));
+    }
+
+    // User Profile validation
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'lastSeen']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'lastSeen', 'isTyping', 'slot', 'photoURL']) &&
+        data.uid is string && data.uid == request.auth.uid &&
+        data.email is string && data.email.size() <= 256 &&
+        data.displayName is string && data.displayName.size() <= 64 &&
+        data.lastSeen is timestamp &&
+        (!('isTyping' in data) || (data.isTyping is bool)) &&
+        (!('slot' in data) || (data.slot is string && data.slot.size() <= 16)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512));
+    }
+
+    // Config validation
+    function isValidConfig(data) {
+      return data.keys().hasAll(['user1Uid', 'user1Email', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['user1Uid', 'user1Email', 'user2Uid', 'user2Email', 'inviteCode', 'createdAt', 'updatedAt', 'appName']) &&
+        data.user1Uid is string && data.user1Uid.size() <= 128 &&
+        data.user1Email is string && data.user1Email.size() <= 256 &&
+        (!('user2Uid' in data) || (data.user2Uid is string && data.user2Uid.size() <= 128)) &&
+        (!('user2Email' in data) || (data.user2Email is string && data.user2Email.size() <= 256)) &&
+        (!('inviteCode' in data) || (data.inviteCode is string && data.inviteCode.size() <= 64)) &&
+        (!('appName' in data) || (data.appName is string && data.appName.size() <= 64)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- Messages Collection ---
+    match /messages/{messageId} {
+      // Single get: allowed if caller is participant
+      allow get: if isSignedIn() && isValidId(messageId) &&
+        (request.auth.uid in resource.data.participants || resource.data.senderUid == request.auth.uid);
+
+      // List query: evaluated against resource.data directly for array-contains queries
+      allow list: if isSignedIn() &&
+        (request.auth.uid in resource.data.participants);
+
+      // Create: message must be valid, createdAt must equal request.time, and expireAt must be within 5-day window
+      allow create: if isSignedIn() && isValidId(messageId) &&
+        isValidMessage(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().expireAt >= request.time + duration.value(4, 'd') &&
+        incoming().expireAt <= request.time + duration.value(5, 'd') + duration.value(2, 'h') &&
+        incoming().participants.hasAny([request.auth.uid]);
+
+      // Update: only allow updating reaction or read status; senderUid, text, createdAt, and expireAt remain immutable
+      allow update: if isSignedIn() && isValidId(messageId) &&
+        incoming().senderUid == existing().senderUid &&
+        incoming().text == existing().text &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().expireAt == existing().expireAt &&
+        incoming().participants == existing().participants &&
+        (
+          // Action 1: Mark as read
+          (incoming().diff(existing()).affectedKeys().hasOnly(['readBy'])) ||
+          // Action 2: Add or change emoji reaction
+          (incoming().diff(existing()).affectedKeys().hasOnly(['reaction'])) ||
+          // Action 3: Both readBy and reaction
+          (incoming().diff(existing()).affectedKeys().hasOnly(['readBy', 'reaction']))
+        );
+
+      // Delete: sender can delete their message, OR either participant can prune expired message
+      allow delete: if isSignedIn() && isValidId(messageId) &&
+        (
+          resource.data.senderUid == request.auth.uid ||
+          (resource.data.participants.hasAny([request.auth.uid]) && resource.data.expireAt <= request.time)
+        );
+    }
+
+    // --- User Profiles Collection ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidId(userId) &&
+        isValidUserProfile(incoming()) && incoming().lastSeen == request.time;
+      allow update: if isSignedIn() && request.auth.uid == userId && isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().email == existing().email &&
+        incoming().lastSeen == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'lastSeen', 'isTyping', 'photoURL', 'slot']);
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- Configuration Collection (/chat_config/dyad) ---
+    match /chat_config/{configId} {
+      allow get: if isSignedIn() && configId == 'dyad';
+      allow list: if isSignedIn();
+
+      // Bootstrap config creation by the first user
+      allow create: if isSignedIn() && configId == 'dyad' &&
+        isValidConfig(incoming()) &&
+        incoming().user1Uid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      // Update config:
+      // Either user 1 updates inviteCode/user2Email/appName
+      // Or user 2 claims their slot by setting user2Uid
+      allow update: if isSignedIn() && configId == 'dyad' &&
+        isValidConfig(incoming()) &&
+        (incoming().user1Uid == existing().user1Uid || existing().user1Uid == '' || request.auth.token.email in ['prinsarya52@gmail.com', 'pk7922927@gmail.com']) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // User 1 managing configuration or claiming User 1 slot
+          ((request.auth.uid == existing().user1Uid || existing().user1Uid == '' || request.auth.token.email in ['prinsarya52@gmail.com', 'pk7922927@gmail.com']) &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['user1Uid', 'user1Email', 'user2Email', 'user2Uid', 'inviteCode', 'appName', 'updatedAt'])) ||
+          // User 2 claiming their slot (can only set user2Uid if empty or matching their email/code)
+          (
+            (!('user2Uid' in existing()) || existing().user2Uid == '' || existing().user2Uid == request.auth.uid) &&
+            incoming().user2Uid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['user2Uid', 'user2Email', 'updatedAt'])
+          )
+        );
+
+      allow delete: if false; // Config cannot be deleted
+    }
+
+    // --- Connection test path ---
+    match /test/{docId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "entities": {
+    "ChatConfig": {
+      "title": "ChatConfig",
+      "description": "System pairing document locking the application to exactly two authorized users.",
+      "type": "object",
+      "properties": {
+        "user1Uid": {
+          "type": "string",
+          "description": "UID of the first authorized user (creator/admin)."
+        },
+        "user1Email": {
+          "type": "string",
+          "description": "Email address of the first authorized user."
+        },
+        "user2Uid": {
+          "type": "string",
+          "description": "UID of the second authorized user (empty until claimed)."
+        },
+        "user2Email": {
+          "type": "string",
+          "description": "Email address of the second authorized user."
+        },
+        "inviteCode": {
+          "type": "string",
+          "description": "Secret one-time code to link the second authorized user."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["user1Uid", "user1Email", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A single private message with strict 5-day expiration.",
+      "type": "object",
+      "properties": {
+        "senderUid": {
+          "type": "string",
+          "description": "UID of the message author."
+        },
+        "senderEmail": {
+          "type": "string",
+          "description": "Email of the message author."
+        },
+        "senderName": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Display name of the author."
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Message text content."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when message was created."
+        },
+        "expireAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when message expires (createdAt + 5 days)."
+        },
+        "readBy": {
+          "type": "array",
+          "description": "Array of user UIDs who have read the message."
+        },
+        "reaction": {
+          "type": "string",
+          "maxLength": 16,
+          "description": "Optional emoji reaction."
+        }
+      },
+      "required": ["senderUid", "senderEmail", "text", "createdAt", "expireAt", "readBy"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Presence and minimal profile for an authorized participant.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "User UID."
+        },
+        "email": {
+          "type": "string",
+          "description": "User email."
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "User display name."
+        },
+        "isTyping": {
+          "type": "boolean",
+          "description": "Typing status flag."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of last heartbeat."
+        }
+      },
+      "required": ["uid", "email", "displayName"]
+    }
+  },
+  "firestore": {
+    "/chat_config/{configId}": {
+      "schema": "ChatConfig",
+      "description": "Configuration document controlling the two authorized users."
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Ephemerally expiring messages exchanged strictly between the 2 authorized users."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Minimal status profile for the two authorized users."
+    }
+  }
+}

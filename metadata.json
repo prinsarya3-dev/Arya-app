@@ -1,0 +1,6 @@
+{
+  "name": "Dyad - Private Two-User Messenger",
+  "description": "Ultra-private, minimal end-to-end communication designed exclusively for two authorized users with 5-day auto-ephemeral messaging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
